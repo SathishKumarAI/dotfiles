@@ -96,9 +96,50 @@ config.window_close_confirmation = "NeverPrompt"
 config.initial_cols = 140
 config.initial_rows = 38
 
+-- Offer the last session back on launch: "Restore 4 tabs — bujo, portfolio, …"
+-- or start fresh. resurrect's periodic_save (above) writes the workspace every
+-- 5 minutes and on unfocus, so after a reboot this is at most 5 minutes old.
+-- Verified on Windows 2026-10-29: the state file held 4 tabs with their cwds
+-- despite the plugin's 3 "syntax of the command" lines at launch.
+-- Skipped when WezTerm was started WITH a command (`wezterm start -- …`), so a
+-- scripted launch never stops at a prompt.
+local function offer_restore(window)
+  if not ok_resurrect then return end
+  local ws = wezterm.mux.get_active_workspace()
+  local ok, state = pcall(resurrect.state_manager.load_state, ws, "workspace")
+  if not ok or not state or not state.window_states then return end
+  local names = {}
+  for _, w in ipairs(state.window_states) do
+    for _, t in ipairs(w.tabs or {}) do
+      local cwd = t.pane_tree and t.pane_tree.cwd or ""
+      table.insert(names, (cwd:gsub("[/\\]+$", ""):match("([^/\\]+)$")) or "~")
+    end
+  end
+  if #names == 0 then return end
+  local gui, pane = window:gui_window(), window:active_pane()
+  if not gui or not pane then return end
+  gui:perform_action(act.InputSelector({
+    title = "Restore last session?",
+    choices = {
+      { id = "restore", label = "Restore " .. #names .. " tab" .. (#names == 1 and "" or "s") .. " — " .. table.concat(names, ", ") },
+      { id = "fresh", label = "Start fresh" },
+    },
+    action = wezterm.action_callback(function(_, _, id)
+      if id ~= "restore" then return end
+      resurrect.workspace_state.restore_workspace(state, {
+        window = window,
+        relative = true,
+        restore_text = true,
+        on_pane_restore = resurrect.tab_state.default_on_pane_restore,
+      })
+    end),
+  }), pane)
+end
+
 wezterm.on("gui-startup", function(cmd)
   local _, _, window = wezterm.mux.spawn_window(cmd or {})
   window:gui_window():maximize()
+  if not (cmd and cmd.args) then pcall(offer_restore, window) end
 end)
 
 -- Window management: snap to screen halves, maximize, restore.
