@@ -96,9 +96,19 @@ config.window_close_confirmation = "NeverPrompt"
 config.initial_cols = 140
 config.initial_rows = 38
 
+-- Offer the last session back on launch — see restore.lua for what it saves,
+-- how a Claude pane is recognised, and why nothing is ever run for you.
+-- Absolute, like the stub in ~/.wezterm.lua: WezTerm's Lua has no `debug`
+-- library (debug.getinfo crashed the whole config, 2026-10-29) and
+-- `wezterm.config_file` is the stub, not this file.
+local here = "C:/Users/PRANAS/Documents/coding/workspace/dotfiles/dotfiles/wezterm/"
+local restore = ok_resurrect and dofile(here .. "restore.lua")(resurrect) or nil
+wezterm.add_to_config_reload_watch_list(here .. "restore.lua")
+
 wezterm.on("gui-startup", function(cmd)
   local _, _, window = wezterm.mux.spawn_window(cmd or {})
   window:gui_window():maximize()
+  if restore and not (cmd and cmd.args) then pcall(restore.offer, window) end
 end)
 
 -- Window management: snap to screen halves, maximize, restore.
