@@ -103,34 +103,79 @@ config.initial_rows = 38
 -- despite the plugin's 3 "syntax of the command" lines at launch.
 -- Skipped when WezTerm was started WITH a command (`wezterm start -- …`), so a
 -- scripted launch never stops at a prompt.
+--
+-- A pane that was running CLAUDE CODE comes back in its folder with a note
+-- printed in it — the commands to pick up where you left off — and NOTHING
+-- run for you: copy one, edit it, or ignore it (owner's call: "give the user
+-- more flexibility"). The note is `inject_output`, i.e. drawn, never typed
+-- into the shell.
+--
+-- The saved "process" is the pane's deepest foreground child, which for a
+-- Claude pane is one of its MCP servers (measured: `node …chrome-devtools-mcp.js`,
+-- `node …shadcn… mcp`) — so a pane counts as Claude when the argv mentions
+-- claude OR mcp. That is also why the plugin's default restore is NOT used for
+-- those panes: for an alt-screen pane it retypes the saved argv, which here
+-- would have started a bare MCP server in the shell. Other alt-screen apps
+-- (vim, htop) still get the default; plain shells get their scrollback back.
+local function is_claude(pt)
+  local p = pt and pt.process
+  if not p then return false end
+  local argv = table.concat(p.argv or {}, " "):lower()
+  return (p.name or ""):lower():match("^claude") ~= nil or argv:match("claude") ~= nil or argv:match("mcp") ~= nil
+end
+
+local function count_claude(pt)
+  if not pt then return 0 end
+  return (is_claude(pt) and 1 or 0) + count_claude(pt.right) + count_claude(pt.bottom)
+end
+
+local DIM, BOLD, RESET = "\27[2m", "\27[1m", "\27[0m"
+local CLAUDE_NOTE = table.concat({
+  "",
+  DIM .. "── restored · Claude Code was running here ──" .. RESET,
+  "  latest code     " .. BOLD .. "git pull --ff-only" .. RESET,
+  "  last session    " .. BOLD .. "claude --continue" .. RESET,
+  "  pick a session  " .. BOLD .. "claude --resume" .. RESET,
+  DIM .. "  nothing was run — copy what you want" .. RESET,
+  "",
+}, "\r\n") .. "\r\n"
+
+local function restore_pane(pt)
+  if is_claude(pt) then
+    pt.pane:inject_output(CLAUDE_NOTE)
+  else
+    resurrect.tab_state.default_on_pane_restore(pt)
+  end
+end
+
 local function offer_restore(window)
   if not ok_resurrect then return end
   local ws = wezterm.mux.get_active_workspace()
   local ok, state = pcall(resurrect.state_manager.load_state, ws, "workspace")
   if not ok or not state or not state.window_states then return end
-  local names = {}
+  local names, claude = {}, 0
   for _, w in ipairs(state.window_states) do
     for _, t in ipairs(w.tabs or {}) do
       local cwd = t.pane_tree and t.pane_tree.cwd or ""
       table.insert(names, (cwd:gsub("[/\\]+$", ""):match("([^/\\]+)$")) or "~")
+      claude = claude + count_claude(t.pane_tree)
     end
   end
   if #names == 0 then return end
   local gui, pane = window:gui_window(), window:active_pane()
   if not gui or not pane then return end
+  local label = "Restore " .. #names .. " tab" .. (#names == 1 and "" or "s") .. " — " .. table.concat(names, ", ")
+  if claude > 0 then label = label .. "  (Claude resume commands shown in " .. claude .. ")" end
   gui:perform_action(act.InputSelector({
     title = "Restore last session?",
-    choices = {
-      { id = "restore", label = "Restore " .. #names .. " tab" .. (#names == 1 and "" or "s") .. " — " .. table.concat(names, ", ") },
-      { id = "fresh", label = "Start fresh" },
-    },
+    choices = { { id = "restore", label = label }, { id = "fresh", label = "Start fresh" } },
     action = wezterm.action_callback(function(_, _, id)
       if id ~= "restore" then return end
       resurrect.workspace_state.restore_workspace(state, {
         window = window,
         relative = true,
         restore_text = true,
-        on_pane_restore = resurrect.tab_state.default_on_pane_restore,
+        on_pane_restore = restore_pane,
       })
     end),
   }), pane)
